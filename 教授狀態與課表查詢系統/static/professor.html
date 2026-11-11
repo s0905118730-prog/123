@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教授端 · 狀態與課表管理</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="logo">國立高雄科技大學<small>教授狀態與課表查詢（教授端）</small></div>
+    <div class="spacer"></div>
+    <div id="navActions"></div>
+  </div>
+</header>
+<main id="view"></main>
+<div class="toast" id="toast"></div>
+
+<script src="/static/api.js"></script>
+<script>
+let profId = null;   // 已登入教授 id
+let profPw = null;   // 登入時使用的密碼（供後續 API 驗證）
+
+function render(){
+  const me = profId ? getProf(profId) : null;
+  $('#navActions').innerHTML = `
+    <a class="top-btn" href="/">學生查詢 ←</a>
+    ${me ? `<button class="top-btn" data-action="logout">登出（${esc(me.name)}）</button>` : ''}`;
+  $('#view').innerHTML = profId ? viewDash() : viewLogin();
+}
+
+/* ---------- 登入 ---------- */
+function viewLogin(){
+  const opts = PROFESSORS.map(p => `<option value="${p.id}">${esc(p.name)}（${esc(p.title)}）</option>`).join('');
+  return `
+    <h2 class="page-title">教授專區 · 登入</h2>
+    <p class="page-sub">請選擇您的姓名並輸入密碼。首次使用預設密碼為 <b>0000</b>，登入後可於頁面下方修改。</p>
+    <div class="panel" style="max-width:460px">
+      <div class="field">
+        <label>教授姓名</label>
+        <select id="loginName">${opts}</select>
+      </div>
+      <div class="field">
+        <label>密碼</label>
+        <input type="password" id="loginPw" placeholder="請輸入密碼">
+      </div>
+      <button class="btn primary block" data-action="login">登入</button>
+      <p class="hint" style="margin-top:12px">※ 資料儲存於伺服器資料庫（SQLite），教授更新後學生即可看到最新狀態。</p>
+    </div>`;
+}
+
+/* ---------- 後台 ---------- */
+function viewDash(){
+  const p = getProf(profId);
+  const statusBtns = Object.entries(STATUS).map(([k,s]) =>
+    `<button class="st-opt ${p.status===k?'on':''}" data-action="set-status" data-status="${k}">
+       <span class="dot" style="background:${s.dot}"></span>${s.label}
+     </button>`).join('');
+
+  return `
+    <h2 class="page-title">${esc(p.name)} 教授的專區</h2>
+    <p class="page-sub">${esc(p.title)} ｜ (07) 3617141${p.ext?` #${esc(p.ext)}`:''}</p>
+
+    <div class="panel">
+      <h3>① 目前狀態</h3>
+      <div class="status-picker">${statusBtns}</div>
+      <div class="field" style="margin-top:14px">
+        <label>狀態備註（選填，例如：在研究室 23365、預計 15:00 回來）</label>
+        <input type="text" id="noteInput" maxlength="60" value="${esc(p.note)}" placeholder="給學生的一句話…">
+      </div>
+      <button class="btn primary" data-action="save-status">更新狀態</button>
+      <span class="hint" style="margin-left:10px">最後更新：${fmtTime(p.updated)}</span>
+    </div>
+
+    <div class="panel">
+      <h3>② 我的課表</h3>
+      <p class="hint" style="margin-top:-8px;margin-bottom:12px">於格內輸入課程名稱與教室（例如：電子學 S202）。學校課表系統無法自動匯入，請自行填寫。</p>
+      ${ttTableHTML(p.schedule, true)}
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn primary" data-action="save-schedule">儲存課表</button>
+        <button class="btn danger" data-action="clear-schedule">清除全部</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>③ 變更密碼</h3>
+      <div class="row2">
+        <div class="field"><label>新密碼</label><input type="password" id="newPw" placeholder="輸入新密碼"></div>
+        <div class="field"><label>確認新密碼</label><input type="password" id="newPw2" placeholder="再次輸入"></div>
+      </div>
+      <button class="btn" data-action="change-pw">變更密碼</button>
+    </div>
+
+    <p class="hint">提示：儲存後，學生端重新整理即可看到最新狀態與課表。</p>`;
+}
+
+/* ---------- 互動 ---------- */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if(!el) return;
+  const act = el.dataset.action;
+  if(act === 'login'){ doLogin(); }
+  else if(act === 'logout'){ profId = null; profPw = null; render(); window.scrollTo(0,0); toast('已登出'); }
+  else if(act === 'set-status'){
+    document.querySelectorAll('.st-opt').forEach(b=>b.classList.remove('on'));
+    el.classList.add('on');
+  }
+  else if(act === 'save-status'){ saveStatus(); }
+  else if(act === 'save-schedule'){ saveSchedule(); }
+  else if(act === 'clear-schedule'){
+    if(confirm('確定要清除所有課表格？')){ saveSchedule({}); }
+  }
+  else if(act === 'change-pw'){ changePw(); }
+});
+
+async function doLogin(){
+  const id = $('#loginName').value;
+  const pw = $('#loginPw').value;
+  const res = await apiLogin(id, pw);
+  if(res.ok){
+    profId = id; profPw = pw;
+    await apiGetProfessors();
+    render(); window.scrollTo(0,0);
+    toast(`歡迎，${getProf(id).name} 教授`);
+  }else{
+    toast(res.error || '密碼錯誤，請再試一次');
+  }
+}
+
+async function saveStatus(){
+  const on = document.querySelector('.st-opt.on');
+  const status = on ? on.dataset.status : (getProf(profId).status || 'unknown');
+  const note = $('#noteInput').value.trim();
+  const res = await apiSaveStatus(profId, profPw, status, note);
+  if(res.ok){ await apiGetProfessors(); render(); toast('狀態已更新'); }
+  else toast(res.error || '更新失敗');
+}
+
+async function saveSchedule(forced){
+  const sched = {};
+  if(forced === undefined){
+    document.querySelectorAll('input[data-cell]').forEach(inp => {
+      const v = inp.value.trim();
+      if(v) sched[inp.dataset.cell] = v;
+    });
+  }
+  const res = await apiSaveSchedule(profId, profPw, forced || sched);
+  if(res.ok){ await apiGetProfessors(); render(); toast(forced ? '已清除課表' : '課表已儲存'); }
+  else toast(res.error || '儲存失敗');
+}
+
+async function changePw(){
+  const a = $('#newPw').value, b = $('#newPw2').value;
+  if(!a){ toast('請輸入新密碼'); return; }
+  if(a !== b){ toast('兩次輸入的密碼不一致'); return; }
+  const res = await apiChangePassword(profId, profPw, a);
+  if(res.ok){ profPw = a; render(); toast('密碼已變更'); }
+  else toast(res.error || '變更失敗');
+}
+
+/* ---------- 啟動：先取得教授名單（供登入選單） ---------- */
+(async function start(){
+  try{
+    await apiGetProfessors();
+    render();
+  }catch(err){
+    $('#view').innerHTML = `<div class="empty">無法連線至伺服器，請確認 Python 後端（app.py）已啟動。</div>`;
+  }
+})();
+</script>
+</body>
+</html>
