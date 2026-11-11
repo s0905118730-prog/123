@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>學生端 · 教授狀態與課表查詢</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="logo">國立高雄科技大學<small>教授狀態與課表查詢（學生端）</small></div>
+    <div class="spacer"></div>
+    <button class="top-btn" data-action="refresh">重新整理</button>
+    <a class="top-btn" href="/professor">教授專區 →</a>
+  </div>
+</header>
+<main id="view"></main>
+<div class="toast" id="toast"></div>
+
+<script src="/static/api.js"></script>
+<script>
+const state = { filter:'all', search:'', showRetired:false, detailId:null };
+
+function render(){ $('#view').innerHTML = viewStudent(); }
+
+/* ---------- 學生端畫面 ---------- */
+function viewStudent(){
+  const list = filteredStudents();
+  const filterChips = [['all','全部'],['available','空閒中'],['office','在辦公室'],['class','上課中'],['meeting','開會中'],['out','外出中'],['leave','休假中']]
+    .map(([k,l]) => `<button class="chip ${state.filter===k?'on':''}" data-action="filter" data-filter="${k}">${l}</button>`).join('');
+
+  return `
+    <h2 class="page-title">教授狀態總覽</h2>
+    <p class="page-sub">共 ${PROFESSORS.filter(p=>!p.retired).length} 位專任教授。點選卡片可查看聯絡資訊與課表。</p>
+    <div class="toolbar">
+      <input class="search" id="searchInput" type="text" placeholder="搜尋教授姓名或專長…" value="${esc(state.search)}">
+      <label class="toggle"><input type="checkbox" id="retiredChk" ${state.showRetired?'checked':''}>顯示退休教師</label>
+    </div>
+    <div class="chips" style="margin-bottom:18px">${filterChips}</div>
+    ${list.length ? `<div class="grid">${list.map(cardHTML).join('')}</div>`
+                  : `<div class="empty">沒有符合條件的教授</div>`}`;
+}
+
+function filteredStudents(){
+  const q = state.search.trim().toLowerCase();
+  return PROFESSORS.filter(p => {
+    if(p.retired && !state.showRetired) return false;
+    if(state.filter !== 'all' && p.status !== state.filter) return false;
+    if(q){
+      const hay = (p.name + p.title + (p.expertise||[]).join('')).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function cardHTML(p){
+  return `
+    <div class="card">
+      <div class="card-top">
+        <div class="avatar ${p.retired?'retired':''}">${initials(p.name)}</div>
+        <div>
+          <div class="p-name">${esc(p.name)}</div>
+          <div class="p-title">${esc(p.title)}</div>
+        </div>
+      </div>
+      ${badgeHTML(p.status)}
+      ${p.note ? `<div class="hint">📝 ${esc(p.note)}</div>` : ''}
+      <div class="meta">
+        ${p.ext ? `<span>📞 (07) 3617141 #${esc(p.ext)}</span>` : `<span>📞 (07) 3617141</span>`}
+        <span>✉️ ${esc(p.email)}</span>
+        <span style="color:#94a3b8">🕘 狀態更新：${fmtTime(p.updated)}</span>
+      </div>
+      <div class="card-foot">
+        <button class="btn primary block" data-action="detail" data-id="${p.id}">查看課表</button>
+      </div>
+    </div>`;
+}
+
+/* ---------- 教授詳細（含課表） ---------- */
+function detailHTML(p){
+  const hasSchedule = Object.values(p.schedule || {}).some(v => v && String(v).trim());
+  return `
+    <div class="overlay" data-action="overlay-bg">
+      <div class="modal">
+        <div class="modal-head">
+          <div class="avatar ${p.retired?'retired':''}">${initials(p.name)}</div>
+          <div>
+            <div class="p-name">${esc(p.name)}</div>
+            <div class="p-title">${esc(p.title)}</div>
+          </div>
+          <button class="close-x" data-action="close-detail">✕</button>
+        </div>
+        <div class="modal-body">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            ${badgeHTML(p.status)}
+            <span class="hint">最後更新：${fmtTime(p.updated)}</span>
+          </div>
+          ${p.note ? `<div class="note-box">📝 ${esc(p.note)}</div>` : ''}
+          <div class="kv">
+            <div class="k">電話</div><div>(07) 3617141${p.ext ? ` #${esc(p.ext)}` : ''}</div>
+            <div class="k">Email</div><div>${esc(p.email)}</div>
+            <div class="k">最高學歷</div><div>${esc(p.degree)}</div>
+          </div>
+          <h4 class="sec">專長</h4>
+          <div>${(p.expertise||[]).map(e=>`<span class="tag">${esc(e)}</span>`).join('')}</div>
+          <h4 class="sec">個人課表</h4>
+          ${hasSchedule ? ttTableHTML(p.schedule, false) : `<div class="hint">此教授尚未填入課表。如為教授本人，請至「教授專區」登入後編輯。</div>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ---------- 互動 ---------- */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if(!el) return;
+  const act = el.dataset.action;
+  if(act === 'filter'){ state.filter = el.dataset.filter; render(); }
+  else if(act === 'detail'){ state.detailId = el.dataset.id; openDetail(); }
+  else if(act === 'close-detail'){ closeDetail(); }
+  else if(act === 'overlay-bg'){ if(e.target === el) closeDetail(); }
+  else if(act === 'refresh'){ loadAndRender(true); }
+});
+document.addEventListener('input', e => {
+  if(e.target.id === 'searchInput'){ state.search = e.target.value; softUpdateStudent(); }
+});
+document.addEventListener('change', e => {
+  if(e.target.id === 'retiredChk'){ state.showRetired = e.target.checked; render(); }
+});
+
+/* 搜尋時只更新卡片區，避免輸入框失焦 */
+function softUpdateStudent(){
+  const list = filteredStudents();
+  const html = list.length ? `<div class="grid">${list.map(cardHTML).join('')}</div>` : `<div class="empty">沒有符合條件的教授</div>`;
+  const holder = $('#view');
+  holder.querySelectorAll('.grid, .empty').forEach(n=>n.remove());
+  holder.insertAdjacentHTML('beforeend', html);
+}
+
+function openDetail(){
+  const p = getProf(state.detailId);
+  if(!p) return;
+  closeDetail();
+  const wrap = document.createElement('div');
+  wrap.id = 'detailWrap';
+  wrap.innerHTML = detailHTML(p);
+  document.body.appendChild(wrap);
+}
+function closeDetail(){
+  const w = $('#detailWrap'); if(w) w.remove();
+  state.detailId = null;
+}
+
+/* ---------- 啟動：向後端取得資料 ---------- */
+async function loadAndRender(notify){
+  try{
+    await apiGetProfessors();
+    render();
+    if(notify) toast('資料已更新');
+  }catch(err){
+    $('#view').innerHTML = `<div class="empty">無法連線至伺服器，請確認 Python 後端（app.py）已啟動。</div>`;
+  }
+}
+
+/* 教授端更新資料後，切回本頁時自動重新取得 */
+window.addEventListener('focus', () => { loadAndRender(false); });
+
+loadAndRender(false);
+</script>
+</body>
+</html>
